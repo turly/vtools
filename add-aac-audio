@@ -1,0 +1,120 @@
+#!/bin/bash
+# If INPUT video file's first audio stream is multi-channel, copy and downconvert
+# it to AAC 2.0 and make this new stream the first and default audio stream.  
+# Video and audio languages are marked as English.
+# Existing audio stream indices are shuffled down.
+# Subtitles, Chapters and Video streams are just copied.
+#
+# I need to get around to adding flags for AAC bitrate and loudnorm etc.
+# But for now it works for me.
+#
+# turly, 2019
+
+if [ $# -ne 2 ]; then
+    echo "Usage: $0 INPUTFILE OUTPUTFILE"
+    exit -1
+fi
+
+input="$1"
+output="$2"
+OVERWRITE=0
+
+if [ ! -f "$input" ]; then
+   echo "## ERROR: Not found:" $input
+   exit -1
+fi
+
+# Stop me doing something stupid
+if [ -f "$output" ]; then
+   echo "## ERROR: Already exists:" $output
+   exit -1
+fi
+
+if [ "$output" == "--overwrite" ]; then     # Careful now
+    OVERWRITE=1
+    ATMPDIR=$(mktemp -d)
+    trap "rm -rf $ATMPDIR" EXIT
+    output="$ATMPDIR/${input##*/}"          # Same name as input except inside TMPDIR
+fi
+
+if [ "${output##*.}" == "mp4" ]; then
+    MP4FLAGS="-movflags +faststart"
+fi
+
+# Look for first English subtitle stream
+# ffprobe writes info to stderr ... ffs
+#     Stream #0:3(eng): Subtitle: dvd_subtitle (mp4s / 0x7334706D), 6 kb/s
+#sub=$(ffprobe -of compact "${input}" 2>&1 | grep Subtitle | grep -m 1 eng | cut -c15-15)
+#
+#if [ ! -z "${sub##*[!0-9]*}" ] ; then
+#    COPY_SUBS="-map 0:${sub} -c:s copy -metadata:s:s:0 language=eng"
+#else
+#    # Just copy all existing subs
+#    COPY_SUBS="-map 0:s? -c:s copy"
+#fi
+
+# Just copy any existing subs
+COPY_SUBS="-map 0:s? -c:s copy"
+
+#title="${output##*/}"       ## dir1/dir2/foo.txt => foo.txt
+#title="${title%.*}"         ## foo.txt ==> foo
+#       -map_metadata -1 -metadata title="${title}" \
+#       -metadata creation_time=2019-05-16T21:30:00 \
+#       -map_chapters -1 \
+#       -filter:a:0 "acompressor=ratio=4,loudnorm" \
+#       -map 0:a:0? -c:a:0 aac -ac 2 \
+
+STREAMS=$(ffprobe "$input" -show_entries format=nb_streams -v 0 -of compact=p=0:nk=1)
+
+# We seem to need explicit individual per-stream -map_metadata commands.
+MAPMETADATA=""
+for ((cx = 3; cx <= $STREAMS; ++cx )) ; do
+    MAPMETADATA="${MAPMETADATA} -map_metadata:s:$cx 0:s:$((cx-1))"
+done
+
+# Find #channels of first audio stream.  If > 2, downmix and add to output mkv, shuffling
+# all other audio stream IDs down.
+# I still haven't found how to copy the chapters metadata (language=eng) across.
+
+CHANS=$(ffprobe -i "$input" -show_entries stream=channels -select_streams a:0 -of compact=p=0:nk=1 -v 0)
+
+if [ $CHANS -gt 2 ]; then
+    set -x
+    ffmpeg -hide_banner -loglevel panic -i "$input"                                                 \
+           -map 0:v -c:v copy                           `# copy video`                              \
+           -map_metadata:s:0 0:s:0                      `# and video metadata`                      \
+           -map 0:a:0? -c:a:0 aac -ac 2                 `# first audio stream -> AAC 2.0`           \
+                       -ar:a:0 48000 -b:a:0 160k                                                    \
+                       -filter:a:0 "acompressor=ratio=4,loudnorm"       `# Expensive but worth it`  \
+                       -disposition:a:0 default         `# make this AAC the default audio stream`  \
+                       -metadata:s:a:0 title="2.0 AAC"                                              \
+                       -metadata:s:a:0 language="eng"                                               \
+           -map 0:a:0  -c:a:1 copy -disposition:a:1 none `# shuffle copy orig audio strm 0 to #1`   \
+           -map 0:a:1? -c:a:2 copy -disposition:a:2 none `# likewise for stream 1 if it exists`     \
+           -map 0:a:2? -c:a:3 copy -disposition:a:3 none `# disposition none == not dflt audio`     \
+           -map 0:a:3? -c:a:4 copy -disposition:a:4 none                                            \
+           -map_chapters 0                                                                          \
+           ${COPY_SUBS}                                                                             \
+           -map_metadata:s:2 0:s:1      `# assumes original audio stream is stream #1, sorry`       \
+           ${MAPMETADATA}               `# Extra metadata explicit copies - why?`                   \
+           ${MP4FLAGS} "${output}"
+else
+    echo "$input: nothing to do, already has $CHANS-channel first audio stream"
+fi
+
+if ((OVERWRITE == 1)) ; then
+
+    INPUTFILESIZE=$(stat -c%s "$input")
+    OUTPUTFILESIZE=$(stat -c%s "$output")
+
+    if ((OUTPUTFILESIZE > INPUTFILESIZE))  ; then  ## assume it worked if output file bigger
+        echo Moving temporary output file to $input
+        mv --verbose "$output" "$input"
+        exit 0
+    else
+        >&2 echo "### Error - output file size $OUTPUTFILESIZE is smaller than input file size $INPUTFILESIZE."
+        exit -1
+    fi
+
+fi          # OVERWRITE
+

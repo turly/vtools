@@ -1,0 +1,43 @@
+#!/bin/bash
+# Fix "language=und" mkv file streams to be "language=eng".
+#
+# Needs mkvmerge/mkvpropedit
+#
+# turly 2019
+
+LANGUAGE=eng                                                # default is english, change with --language=TLC
+DRY_RUN=0
+
+while [ "$1" != "" ]; do                                    # for all arguments
+    if [[ $1 == --language=* ]]; then
+        LANGUAGE="${1/--language=/}"                        # eg --language=spa
+    elif [ "$1" == "--dry-run" -o "$1" == "-n" ]; then
+        DRY_RUN=1
+    elif [ "$1" == "--help" ]; then
+        echo "Usage: fix-mkv-langs [--language=LNG] [--dry-run]  MKVFILE [MKVFILE...]"
+        echo "   Sets all undefined language \"language=und\" mkv file streams to the"
+        echo "   specified language (or defaults to \"eng\")."
+        echo
+        echo "Options:"
+        echo "   --language=LNG  3-letter code specifying language, default is \"eng\""
+        echo "   --dry-run       Just print the mkvpropedit command instetad of executing it"
+        echo
+    else
+        if [ -f "$1" ]; then
+            mkvmerge -I "$1" | grep language:und | while read ln; do
+                trackid=${ln:9:1}                           # "Track ID X:"  -- we allow only one digit, sorry
+                if [ ! -z "${trackid##*[!0-9]*}" ]; then    # is numeric
+                    ((trackid++))                           # mkvpropedit numbering starts at 1
+                    echo mkvpropedit "$1" -e track:$trackid -s language="$LANGUAGE"
+                    if [ $DRY_RUN -eq 0 ]; then
+                        mkvpropedit "$1" --edit track:$trackid -s language="$LANGUAGE"
+                    fi
+                fi
+            done
+        else
+            echo "### NOT FOUND:" $1
+            exit -1
+        fi
+    fi
+    shift
+done
