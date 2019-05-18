@@ -1,5 +1,6 @@
 # vtools
 Some of my scripts for video file manipulation. ffmpeg and mkvtoolnix needed.
+Careful with these, while I've used them, try them out on COPIES of your video files first!
 
 ## fix-mkv-langs 
 A tiny script which uses mkvmerge and mkvpropedit to change all streams with undefined languages (ie "language=und") to be "eng" (or a language of your choosing.)
