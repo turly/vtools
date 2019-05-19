@@ -33,7 +33,7 @@ fi
 if [ "$output" == "--overwrite" ]; then     # Careful now
     OVERWRITE=1
     ATMPDIR=$(mktemp -d)
-    trap "rm -rf $ATMPDIR" EXIT
+    trap "rm -rf $ATMPDIR" EXIT             # delete ATMPDIR on exit
     output="$ATMPDIR/${input##*/}"          # Same name as input except inside TMPDIR
 fi
 
@@ -72,6 +72,10 @@ for ((cx = 3; cx <= $STREAMS; ++cx )) ; do
     MAPMETADATA="${MAPMETADATA} -map_metadata:s:$cx 0:s:$((cx-1))"
 done
 
+if [[ -z ${AUDIO_FILTER+x} ]]; then                          # if AUDIO_FILTER not already set
+    AUDIO_FILTER="-filter:a:0 acompressor=ratio=4,loudnorm"  # Expensive but worth it
+fi
+
 # Find #channels of first audio stream.  If > 2, downmix and add to output mkv, shuffling
 # all other audio stream IDs down.
 # I still haven't found how to copy the chapters metadata (language=eng) across.
@@ -80,12 +84,12 @@ CHANS=$(ffprobe -i "$input" -show_entries stream=channels -select_streams a:0 -o
 
 if [ $CHANS -gt 2 ]; then
     set -x
-    ffmpeg -hide_banner -loglevel panic -i "$input"                                                 \
+    ffmpeg -hide_banner -i "$input"                                                 \
            -map 0:v -c:v copy                           `# copy video`                              \
            -map_metadata:s:0 0:s:0                      `# and video metadata`                      \
            -map 0:a:0? -c:a:0 aac -ac 2                 `# first audio stream -> AAC 2.0`           \
                        -ar:a:0 48000 -b:a:0 160k                                                    \
-                       -filter:a:0 "acompressor=ratio=4,loudnorm"       `# Expensive but worth it`  \
+                       ${AUDIO_FILTER}                                                              \
                        -disposition:a:0 default         `# make this AAC the default audio stream`  \
                        -metadata:s:a:0 title="2.0 AAC"                                              \
                        -metadata:s:a:0 language="eng"                                               \
