@@ -10,8 +10,13 @@
 #
 # turly, 2019
 
+if [ "$1" == "--quiet" ]; then
+    QUIETFLAGS="-nostats -loglevel 0"
+    shift
+fi
+
 if [ $# -ne 2 ]; then
-    echo "Usage: $0 INPUTFILE OUTPUTFILE"
+    echo "Usage: $0 [--quiet] INPUTFILE OUTPUTFILE"
     exit -1
 fi
 
@@ -84,7 +89,7 @@ CHANS=$(ffprobe -i "$input" -show_entries stream=channels -select_streams a:0 -o
 
 if [ $CHANS -gt 2 ]; then
     set -x
-    ffmpeg -hide_banner -i "$input"                                                 \
+    ffmpeg -hide_banner ${QUIETFLAGS} -i "$input"                                                   \
            -map 0:v -c:v copy                           `# copy video`                              \
            -map_metadata:s:0 0:s:0                      `# and video metadata`                      \
            -map 0:a:0? -c:a:0 aac -ac 2                 `# first audio stream -> AAC 2.0`           \
