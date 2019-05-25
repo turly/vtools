@@ -11,6 +11,9 @@ Another script which checks if the first audio stream in a mkv/mp4 file has more
 
 Apologies, this script has too many hardcoded options.
 
+## sonarr-add-aac-audio.sh
+Sonarr post-processing script which will run add-aac-audio on Sonarr/Radarr downloads.  This needs to be set up in Sonarr's Settings->Connect page, enable the "Download"/"Import" and "Upgrade" options.
+
 ## License
 MIT License, see LICENSE file
 
