@@ -24,7 +24,8 @@ while [ "$1" != "" ]; do                                    # for all arguments
         echo
     else
         if [ -f "$1" ]; then
-            mkvmerge -I "$1" | grep language:und | while read ln; do
+            # Language returned is sometimes "unk" instead of "und" so check for both
+            mkvmerge -I "$1" | grep language:un. | while read -r ln; do
                 trackid=${ln:9:1}                           # "Track ID X:"  -- we allow only one digit, sorry
                 if [ ! -z "${trackid##*[!0-9]*}" ]; then    # is numeric
                     ((trackid++))                           # mkvpropedit numbering starts at 1
@@ -35,7 +36,7 @@ while [ "$1" != "" ]; do                                    # for all arguments
                 fi
             done
         else
-            echo "### NOT FOUND:" $1
+            echo "### NOT FOUND: $1"
             exit -1
         fi
     fi

@@ -10,56 +10,111 @@
 #
 # turly, 2019
 
-if [ "$1" == "--quiet" ]; then
-    QUIETFLAGS="-nostats -loglevel 0"
-    shift
-fi
+# Assume we want quiet output unless --verbose is specified
+QUIETFLAGS="-nostats -loglevel 0"
+DRYRUN=
+FIXLANGS=1
 
-if [ $# -ne 2 ]; then
-    echo "Usage: $0 [--quiet] INPUTFILE OUTPUTFILE"
+# Audio tracks not in this list will get dumped
+# You should have run fix-mkv-langs first to fix up "undefined" / "unknown" langs
+# Set empty to do no stripping.
+# I like to watch European shows in their original language with subtitles
+WANTED_AUDIOS=eng,spa,ger,fre,ita
+
+# Args must appear before filename
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    -v|--verbose)
+        QUIETFLAGS=
+        shift
+        ;;
+    --no-fix-langs)
+        FIXLANGS=0
+        shift
+        ;;
+    --fix-langs)
+        FIXLANGS=1
+        shift
+        ;;
+    --wanted-audios=*)      # comma-separated list of audio language codes
+        WANTED_AUDIOS="${1/--wanted-audios=/}"
+        shift
+        ;;
+    -n|--dry-run)           # not terribly applicable to ffmpeg / mkvtoolnix
+        DRYRUN="-n"
+        shift
+        ;;
+    *)                      # unknown arg, assume it's a filename which is processed below
+        break;
+        ;;
+    esac
+done
+
+
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 [--verbose] VIDEOFILE"
     exit -1
 fi
 
 input="$1"
-output="$2"
-OVERWRITE=0
-
-if [ ! -f "$input" ]; then
-   echo "## ERROR: Not found:" $input
-   exit -1
-fi
-
-# Stop me doing something stupid
-if [ -f "$output" ]; then
-   echo "## ERROR: Already exists:" $output
-   exit -1
-fi
-
-if [ "$output" == "--overwrite" ]; then     # Careful now
-    OVERWRITE=1
-    ATMPDIR=$(mktemp -d)
-    trap "rm -rf $ATMPDIR" EXIT             # delete ATMPDIR on exit
-    output="$ATMPDIR/${input##*/}"          # Same name as input except inside TMPDIR
-fi
+output="$1"
 
 if [ "${output##*.}" == "mp4" ]; then
     MP4FLAGS="-movflags +faststart"
 fi
 
-# Look for first English subtitle stream
-# ffprobe writes info to stderr ... ffs
-#     Stream #0:3(eng): Subtitle: dvd_subtitle (mp4s / 0x7334706D), 6 kb/s
-#sub=$(ffprobe -of compact "${input}" 2>&1 | grep Subtitle | grep -m 1 eng | cut -c15-15)
-#
-#if [ ! -z "${sub##*[!0-9]*}" ] ; then
-#    COPY_SUBS="-map 0:${sub} -c:s copy -metadata:s:s:0 language=eng"
-#else
-#    # Just copy all existing subs
-#    COPY_SUBS="-map 0:s? -c:s copy"
-#fi
+if [ ${FIXLANGS} -eq 1 ]; then
+    # Try to fix the video file's language metadata (video / audio / subtitle streams)
+    fix-mkv-langs ${DRYRUN} "${input}" # fix language metadata in situ
+fi
 
-# Just copy any existing subs
-COPY_SUBS="-map 0:s? -c:s copy"
+ATMPDIR=$(mktemp -d)                                # Create temporary dir ATMPDIR
+trap 'rm -rf $ATMPDIR' EXIT                         # delete ATMPDIR on exit
+
+
+output="$ATMPDIR/${input##*/}"                      # Same name as input except inside ATMPDIR
+
+if [ "${input##*.}" == "mkv" -a "${WANTED_AUDIOS}" != "" ]; then   # got an mkv file and a set of desired audio langs - strip any unneeded audio streams
+
+    LANGS=$(ffprobe "${input}" -show_entries stream=index:stream_tags=language -select_streams a -of compact=p=0:nk=1 -v 0)
+
+    # Only want eng,spa,fre,ger,ita audio streams - moot if we have only one stream which we don't touch
+    #n_audio_langs=$(ffprobe "${input}" -show_entries stream=index:stream_tags=language -select_streams a -of compact=p=0:nk=1 -v 0 | wc -w)
+    n_audio_langs=$(echo "$LANGS" | wc -w)
+    #echo "LANGS: $LANGS"
+    #echo "n_audio_langs: $n_audio_langs"
+
+    if [ $n_audio_langs -gt 1 ]; then               # Do nothing if only one stream
+        A_LANGS=(${LANGS})                          # Languages in video file as array  
+        BADLANGS=""
+        GOODLANGS=""
+        for lang in "${A_LANGS[@]}"                 # 1|tur 2|eng 3|ger 4|spa
+        do
+            thisLang="${lang/[0-9]|/}"              # remove the stream index digit|
+            if [ "${WANTED_AUDIOS/$thisLang//}" == "${WANTED_AUDIOS}" ]; then
+                echo "Input Contains unwanted language: $thisLang"
+                BADLANGS="${thisLang} $BADLANGS"
+            else
+                GOODLANGS="${thisLang} $GOODLANGS"
+            fi
+        done
+        if [ "$BADLANGS" != "" ]; then
+            if [ "$GOODLANGS" != "" ]; then
+                mkv_wanted_audio="$ATMPDIR/tmp-${input##*/}"    # Same name as input except inside ATMPDIR with tmp- prefix
+                # Copy input file to $mkv_wanted_audio - only copying audio streams whose languages are in WANTED_AUDIOS
+                echo "Stripping unwanted audio { ${BADLANGS}} from $input, leaving { ${GOODLANGS}}"
+                if mkvmerge -q -o "${mkv_wanted_audio}" -a $WANTED_AUDIOS "${input}" ; then
+                    if [ $(stat -c%s "$input") -ne $(stat -c%s "$mkv_wanted_audio") ]; then
+                        mv "$mkv_wanted_audio" "$input"
+                    fi
+                fi
+            else
+                echo "NOT stripping unwanted audio { ${BADLANGS}} from $input, no good languages would remain"
+            fi
+        fi
+    fi
+fi
 
 #title="${output##*/}"       ## dir1/dir2/foo.txt => foo.txt
 #title="${title%.*}"         ## foo.txt ==> foo
@@ -73,7 +128,7 @@ STREAMS=$(ffprobe "$input" -show_entries format=nb_streams -v 0 -of compact=p=0:
 
 # We seem to need explicit individual per-stream -map_metadata commands.
 MAPMETADATA=""
-for ((cx = 3; cx <= $STREAMS; ++cx )) ; do
+for ((cx = 3; cx <= STREAMS; ++cx )) ; do
     MAPMETADATA="${MAPMETADATA} -map_metadata:s:$cx 0:s:$((cx-1))"
 done
 
@@ -83,12 +138,18 @@ fi
 
 # Find #channels of first audio stream.  If > 2, downmix and add to output mkv, shuffling
 # all other audio stream IDs down.
-# I still haven't found how to copy the chapters metadata (language=eng) across.
+# I still haven't found how to copy the chapters metadata (language=eng).
 
 CHANS=$(ffprobe -i "$input" -show_entries stream=channels -select_streams a:0 -of compact=p=0:nk=1 -v 0)
 
+if [ "$CHANS" == "" ]; then                             # ffprobe didn't work for some reason
+    CHANS=1                                             # so... pretend we have a 1-channel stream
+fi                                                      # which means we won't do the AAC stuff
+
 if [ $CHANS -gt 2 ]; then
     set -x
+    INPUTFILESIZE=$(stat -c%s "$input")                 # Keep tabs on size for later - used to check whether we added an AAC stream
+
     ffmpeg -hide_banner ${QUIETFLAGS} -i "$input"                                                   \
            -map 0:v -c:v copy                           `# copy video`                              \
            -map_metadata:s:0 0:s:0                      `# and video metadata`                      \
@@ -103,27 +164,23 @@ if [ $CHANS -gt 2 ]; then
            -map 0:a:2? -c:a:3 copy -disposition:a:3 none `# disposition none == not dflt audio`     \
            -map 0:a:3? -c:a:4 copy -disposition:a:4 none                                            \
            -map_chapters 0                                                                          \
-           ${COPY_SUBS}                                                                             \
+           -map 0:s? -c:s copy                           `# copy any existing subtitles`            \
            -map_metadata:s:2 0:s:1      `# assumes original audio stream is stream #1, sorry`       \
            ${MAPMETADATA}               `# Extra metadata explicit copies - why?`                   \
            ${MP4FLAGS} "${output}"
-else
-    echo "$input: nothing to do, already has $CHANS-channel first audio stream"
-fi
-
-if ((OVERWRITE == 1)) ; then
-
-    INPUTFILESIZE=$(stat -c%s "$input")
+    set +x
     OUTPUTFILESIZE=$(stat -c%s "$output")
-
-    if ((OUTPUTFILESIZE > INPUTFILESIZE))  ; then  ## assume it worked if output file bigger
-        echo Moving temporary output file to $input
+    if ((OUTPUTFILESIZE > INPUTFILESIZE))  ; then   # assume it worked if output file bigger
+        echo "Moving temporary output file to original file $input"
         mv --verbose "$output" "$input"
         exit 0
     else
+        echo "$input $INPUTFILESIZE"
+        echo "$output $OUTPUTFILESIZE"
         >&2 echo "### Error - output file size $OUTPUTFILESIZE is smaller than input file size $INPUTFILESIZE."
         exit -1
     fi
-
-fi          # OVERWRITE
+else
+    echo "$input: nothing to do, already has $CHANS-channel first audio stream"
+fi
 
