@@ -10,16 +10,30 @@
 #
 # turly, 2019
 
+MKVMERGE=mkvmerge
+FFMPEG=ffmpeg
+FFPROBE=ffprobe
+FIX_MKV_LANGS=fix-mkv-langs
+
+## Docker bodgery - check for local mkvtoolnix
+#THISDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+##echo $THISDIR
+#if [ -d "$THISDIR/local-mkvtoolnix" ]; then
+#    LOC="$THISDIR/local-mkvtoolnix"
+#    MKVMERGE="env LD_LIBRARY_PATH=$LOC/mkvtoolnix-libs $LOC/mkvmerge"
+#    #MKVPROPEDIT="LD_LIBRARY_PATH=$LOC/mkvtoolnix-libs $LOC/mkvpropedit"
+#    FIX_MKV_LANGS="$THISDIR/fix-mkv-langs"
+#fi
+
 # Assume we want quiet output unless --verbose is specified
 QUIETFLAGS="-nostats -loglevel 0"
 DRYRUN=
-FIXLANGS=1
+FIXLANGS=0
 
-# Audio tracks not in this list will get dumped
-# You should have run fix-mkv-langs first to fix up "undefined" / "unknown" langs
-# Set empty to do no stripping.
-# I like to watch European shows in their original language with subtitles
-WANTED_AUDIOS=eng,spa,ger,fre,ita
+# Audio tracks *not* in this list will get dumped
+# NB: You should have run fix-mkv-langs first to fix up "undefined" / "unknown" langs
+# Set empty to do no stripping (--wanted-audios=).
+WANTED_AUDIOS=eng,spa,ger
 
 # Args must appear before filename
 
@@ -37,7 +51,7 @@ while [ "$#" -gt 0 ]; do
         FIXLANGS=1
         shift
         ;;
-    --wanted-audios=*)      # comma-separated list of audio language codes
+    --wanted-audios=*)      # comma-separated list of wanted audio language codes (or empty)
         WANTED_AUDIOS="${1/--wanted-audios=/}"
         shift
         ;;
@@ -66,7 +80,7 @@ fi
 
 if [ ${FIXLANGS} -eq 1 ]; then
     # Try to fix the video file's language metadata (video / audio / subtitle streams)
-    fix-mkv-langs ${DRYRUN} "${input}" # fix language metadata in situ
+    ${FIX_MKV_LANGS} ${DRYRUN} "${input}" # fix language metadata in situ
 fi
 
 ATMPDIR=$(mktemp -d)                                # Create temporary dir ATMPDIR
@@ -77,10 +91,10 @@ output="$ATMPDIR/${input##*/}"                      # Same name as input except 
 
 if [ "${input##*.}" == "mkv" -a "${WANTED_AUDIOS}" != "" ]; then   # got an mkv file and a set of desired audio langs - strip any unneeded audio streams
 
-    LANGS=$(ffprobe "${input}" -show_entries stream=index:stream_tags=language -select_streams a -of compact=p=0:nk=1 -v 0)
+    LANGS=$(${FFPROBE} "${input}" -show_entries stream=index:stream_tags=language -select_streams a -of compact=p=0:nk=1 -v 0)
 
     # Only want eng,spa,fre,ger,ita audio streams - moot if we have only one stream which we don't touch
-    #n_audio_langs=$(ffprobe "${input}" -show_entries stream=index:stream_tags=language -select_streams a -of compact=p=0:nk=1 -v 0 | wc -w)
+    #n_audio_langs=$(${FFPROBE} "${input}" -show_entries stream=index:stream_tags=language -select_streams a -of compact=p=0:nk=1 -v 0 | wc -w)
     n_audio_langs=$(echo "$LANGS" | wc -w)
     #echo "LANGS: $LANGS"
     #echo "n_audio_langs: $n_audio_langs"
@@ -104,8 +118,8 @@ if [ "${input##*.}" == "mkv" -a "${WANTED_AUDIOS}" != "" ]; then   # got an mkv 
                 mkv_wanted_audio="$ATMPDIR/tmp-${input##*/}"    # Same name as input except inside ATMPDIR with tmp- prefix
                 # Copy input file to $mkv_wanted_audio - only copying audio streams whose languages are in WANTED_AUDIOS
                 echo "Stripping unwanted audio { ${BADLANGS}} from $input, leaving { ${GOODLANGS}}"
-                if mkvmerge -q -o "${mkv_wanted_audio}" -a $WANTED_AUDIOS "${input}" ; then
-                    if [ $(stat -c%s "$input") -ne $(stat -c%s "$mkv_wanted_audio") ]; then
+                if $MKVMERGE -q -o "${mkv_wanted_audio}" -a $WANTED_AUDIOS "${input}" ; then
+                    if [ $(stat -c%s "$input") -ne $(stat -c%s "$mkv_wanted_audio") ]; then     # different file sizes
                         mv "$mkv_wanted_audio" "$input"
                     fi
                 fi
@@ -124,9 +138,9 @@ fi
 #       -filter:a:0 "acompressor=ratio=4,loudnorm" \
 #       -map 0:a:0? -c:a:0 aac -ac 2 \
 
-STREAMS=$(ffprobe "$input" -show_entries format=nb_streams -v 0 -of compact=p=0:nk=1)
+STREAMS=$(${FFPROBE} "$input" -show_entries format=nb_streams -v 0 -of compact=p=0:nk=1)
 
-# We seem to need explicit individual per-stream -map_metadata commands.
+# We need explicit individual per-stream -map_metadata commands.
 MAPMETADATA=""
 for ((cx = 3; cx <= STREAMS; ++cx )) ; do
     MAPMETADATA="${MAPMETADATA} -map_metadata:s:$cx 0:s:$((cx-1))"
@@ -140,18 +154,28 @@ fi
 # all other audio stream IDs down.
 # I still haven't found how to copy the chapters metadata (language=eng).
 
-CHANS=$(ffprobe -i "$input" -show_entries stream=channels -select_streams a:0 -of compact=p=0:nk=1 -v 0)
+CHANS=$(${FFPROBE} -i "$input" -show_entries stream=channels -select_streams a:0 -of compact=p=0:nk=1 -v 0)
 
-if [ "$CHANS" == "" ]; then                             # ffprobe didn't work for some reason
+if [ "$CHANS" == "" ]; then                             # ${FFPROBE} didn't work for some reason
     CHANS=1                                             # so... pretend we have a 1-channel stream
 fi                                                      # which means we won't do the AAC stuff
 
+if [ $CHANS -eq 2 ]; then                               # ffprobe can report 2 as Channels_(original) even tho the file is 5.1
+    CODEC=$(${FFPROBE} -i "$input" -show_entries stream=codec_name -select_streams a:0 -of compact=p=0:nk=1 -v 0)
+    if [ "$CODEC" == "dts" ]; then                      # file contains DTS upconverted 2-channel
+        echo "Codec is DTS even though allegedly 2 channels, forcing creation of AAC-2.0"
+        CHANS=6
+    fi
+fi
+
 if [ $CHANS -gt 2 ]; then
-    set -x
     INPUTFILESIZE=$(stat -c%s "$input")                 # Keep tabs on size for later - used to check whether we added an AAC stream
 
-    ffmpeg -hide_banner ${QUIETFLAGS} -i "$input"                                                   \
-           -map 0:v -c:v copy                           `# copy video`                              \
+    # Copy only the first video stream as some mkvs have embedded covers masquerading as mjpeg video streams
+
+    set -x
+    ${FFMPEG} -hide_banner ${QUIETFLAGS} -i "$input"                                                \
+           -map 0:v:0 -c:v copy                         `# copy only first video stream`            \
            -map_metadata:s:0 0:s:0                      `# and video metadata`                      \
            -map 0:a:0? -c:a:0 aac -ac 2                 `# first audio stream -> AAC 2.0`           \
                        -ar:a:0 48000 -b:a:0 160k                                                    \
@@ -166,7 +190,7 @@ if [ $CHANS -gt 2 ]; then
            -map_chapters 0                                                                          \
            -map 0:s? -c:s copy                           `# copy any existing subtitles`            \
            -map_metadata:s:2 0:s:1      `# assumes original audio stream is stream #1, sorry`       \
-           ${MAPMETADATA}               `# Extra metadata explicit copies - why?`                   \
+           ${MAPMETADATA}               `# Extra metadata explicit copies`                          \
            ${MP4FLAGS} "${output}"
     set +x
     OUTPUTFILESIZE=$(stat -c%s "$output")

@@ -5,6 +5,17 @@
 #
 # turly 2019
 
+MKVMERGE=mkvmerge
+MKVPROPEDIT=mkvpropedit
+
+## Docker bodgery - check for local mkvtoolnix
+#THISDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+#if [ -d "$THISDIR/local-mkvtoolnix" ]; then
+#    LOC="$THISDIR/local-mkvtoolnix"
+#    MKVMERGE="env LD_LIBRARY_PATH=$LOC/mkvtoolnix-libs $LOC/mkvmerge"
+#    MKVPROPEDIT="env LD_LIBRARY_PATH=$LOC/mkvtoolnix-libs $LOC/mkvpropedit"
+#fi
+
 LANGUAGE=eng                                                # default is english, change with --language=TLC
 DRY_RUN=0
 
@@ -25,13 +36,13 @@ while [ "$1" != "" ]; do                                    # for all arguments
     else
         if [ -f "$1" ]; then
             # Language returned is sometimes "unk" instead of "und" so check for both
-            mkvmerge -I "$1" | grep language:un. | while read -r ln; do
+            ${MKVMERGE} -I "$1" | grep language:un. | while read -r ln; do
                 trackid=${ln:9:1}                           # "Track ID X:"  -- we allow only one digit, sorry
                 if [ ! -z "${trackid##*[!0-9]*}" ]; then    # is numeric
                     ((trackid++))                           # mkvpropedit numbering starts at 1
-                    echo mkvpropedit "$1" -e track:$trackid -s language="$LANGUAGE"
+                    echo ${MKVPROPEDIT} "$1" -e track:$trackid -s language="$LANGUAGE"
                     if [ $DRY_RUN -eq 0 ]; then
-                        mkvpropedit "$1" --edit track:$trackid -s language="$LANGUAGE"
+                        ${MKVPROPEDIT} "$1" --edit track:$trackid -s language="$LANGUAGE"
                     fi
                 fi
             done
@@ -42,3 +53,4 @@ while [ "$1" != "" ]; do                                    # for all arguments
     fi
     shift
 done
+
