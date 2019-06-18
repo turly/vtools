@@ -11,6 +11,11 @@ AAAC="$WHEREAMI/add-aac-audio"      # add-aac-audio script in same dir as this o
 FIXLANGS="$WHEREAMI/fix-mkv-langs"  # Fix "language=und" metadata for audio/subtitles etc
 LOGFILE=$WHEREAMI/saac.log
 
+echo $PATH >> $LOGFILE
+which ffmpeg >> $LOGFILE
+which ffprobe >> $LOGFILE
+which mkvmerge >> $LOGFILE
+
 >>$LOGFILE echo `date`: sonarr-add-aac-audio.sh - $WHEREAMI - event type $sonarr_eventtype $radarr_eventtype
 
 if [ "$sonarr_eventtype" == "Download" ]; then
@@ -18,17 +23,17 @@ if [ "$sonarr_eventtype" == "Download" ]; then
     "${FIXLANGS}" "$sonarr_episodefile_path" &>> $LOGFILE
     >>$LOGFILE echo `date`: "${AAAC}" "$sonarr_episodefile_path"
     if ! "${AAAC}" "$sonarr_episodefile_path" &>> $LOGFILE; then
-        >&2 echo "Failed to add AAC audio to" $sonarr_episodefile_path
-        >>$LOGFILE echo "Failed to add AAC audio to" $sonarr_episodefile_path
+        >&2 echo "Failed to add AAC audio to $sonarr_episodefile_path"
+        >>$LOGFILE echo "Failed to add AAC audio to $sonarr_episodefile_path"
         exit 1
     fi
 elif [ "$radarr_eventtype" == "Download" ]; then
     >>$LOGFILE echo `date`: "${FIXLANGS}" "$radarr_moviefile_path"
-    "${FIXLANGS}" "$radarr_episodefile_path" &>> $LOGFILE
+    "${FIXLANGS}" "$radarr_moviefile_path" &>> $LOGFILE
     >>$LOGFILE echo `date`: "${AAAC}" "$radarr_moviefile_path"
     if ! "${AAAC}" "$radarr_moviefile_path" &> /dev/null; then
-        >&2 echo "Failed to add AAC audio to" $radarr_moviefile_path
-        >>$LOGFILE echo "Failed to add AAC audio to" $radarr_moviefile_path
+        >&2 echo "Failed to add AAC audio to $radarr_moviefile_path"
+        >>$LOGFILE echo "Failed to add AAC audio to $radarr_moviefile_path"
         exit 1
     fi
 fi
