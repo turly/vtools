@@ -8,6 +8,10 @@
 # I need to get around to adding flags for AAC bitrate and loudnorm etc.
 # But for now it works for me.
 #
+# Notes:
+# We copy only the *first* video stream as some mkvs have embedded covers 
+# masquerading as mjpeg video streams (and often in the wrong script/language.)
+#
 # turly, 2019
 
 MKVMERGE=mkvmerge
@@ -35,6 +39,13 @@ FIXLANGS=0
 # Set empty to do no stripping (--wanted-audios=).
 WANTED_AUDIOS=eng,spa,ger
 
+# Print usage and exit with error code $1
+function Usage()
+{
+    echo "Usage: $0 [--verbose] [--fix-langs] [--wanted-audios=tlc[,tlc...]] VIDEOFILE"
+    exit $1
+}
+
 # Args must appear before filename
 
 while [ "$#" -gt 0 ]; do
@@ -55,9 +66,16 @@ while [ "$#" -gt 0 ]; do
         WANTED_AUDIOS="${1/--wanted-audios=/}"
         shift
         ;;
+    --wanted-audio=*)       # comma-separated list of wanted audio language codes (or empty)
+        WANTED_AUDIOS="${1/--wanted-audio=/}"
+        shift
+        ;;
     -n|--dry-run)           # not terribly applicable to ffmpeg / mkvtoolnix
         DRYRUN="-n"
         shift
+        ;;
+    --help)
+        Usage 0
         ;;
     *)                      # unknown arg, assume it's a filename which is processed below
         break;
@@ -67,8 +85,7 @@ done
 
 
 if [ $# -ne 1 ]; then
-    echo "Usage: $0 [--verbose] VIDEOFILE"
-    exit -1
+    Usage -1
 fi
 
 input="$1"
@@ -78,9 +95,11 @@ if [ "${output##*.}" == "mp4" ]; then
     MP4FLAGS="-movflags +faststart"
 fi
 
-if [ ${FIXLANGS} -eq 1 ]; then
-    # Try to fix the video file's language metadata (video / audio / subtitle streams)
-    ${FIX_MKV_LANGS} ${DRYRUN} "${input}" # fix language metadata in situ
+if [ "${output##*.}" == "mkv" ]; then
+    if [ ${FIXLANGS} -eq 1 ]; then
+        # Try to fix the video file's language metadata (video / audio / subtitle streams)
+        ${FIX_MKV_LANGS} ${DRYRUN} "${input}"       # fix language metadata in situ
+    fi
 fi
 
 ATMPDIR=$(mktemp -d)                                # Create temporary dir ATMPDIR
@@ -171,9 +190,17 @@ fi
 if [ $CHANS -gt 2 ]; then
     INPUTFILESIZE=$(stat -c%s "$input")                 # Keep tabs on size for later - used to check whether we added an AAC stream
 
-    # Copy only the first video stream as some mkvs have embedded covers masquerading as mjpeg video streams
+                                                        # Use original language name of audio stream 0 if available
+    LNG=$(${FFPROBE} "${input}" -show_entries stream=index:stream_tags=language -select_streams a:0 -of compact=p=0:nk=1 -v 0)
+    LNG="${LNG/1|/}"                                    # Format will be something like "1|fre" so strip the 1|
+    if [ ${#LNG} -gt 1 -a ${#LNG} -lt 4 ]; then         # Name can have 1.3 characters, should really check for alphabetic
+        lnm="${LNG}"
+    else
+        lnm="eng"                                       # Use "eng" as language name of newly-created stream
+    fi
 
     set -x
+
     ${FFMPEG} -hide_banner ${QUIETFLAGS} -i "$input"                                                \
            -map 0:v:0 -c:v copy                         `# copy only first video stream`            \
            -map_metadata:s:0 0:s:0                      `# and video metadata`                      \
@@ -182,7 +209,7 @@ if [ $CHANS -gt 2 ]; then
                        ${AUDIO_FILTER}                                                              \
                        -disposition:a:0 default         `# make this AAC the default audio stream`  \
                        -metadata:s:a:0 title="2.0 AAC"                                              \
-                       -metadata:s:a:0 language="eng"                                               \
+                       -metadata:s:a:0 language="${lnm}" `# set language of new AAC 2.0 stream`     \
            -map 0:a:0  -c:a:1 copy -disposition:a:1 none `# shuffle copy orig audio strm 0 to #1`   \
            -map 0:a:1? -c:a:2 copy -disposition:a:2 none `# likewise for stream 1 if it exists`     \
            -map 0:a:2? -c:a:3 copy -disposition:a:3 none `# disposition none == not dflt audio`     \
